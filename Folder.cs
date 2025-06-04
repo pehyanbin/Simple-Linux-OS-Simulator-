@@ -1,30 +1,31 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO.Enumeration;
+using System.IO;
 using System.Linq;
-using System.Text.Json.Serialization;
-using System.Xml.Linq;
 
-namespace testonly.NewFolder
+namespace FileStorageSystem
 {
     public class Folder : FileSystemEntity
     {
-        [JsonPropertyName("contents")]
-        public List<FileSystemEntity> Contents { get; set; } = new List<FileSystemEntity>();
+        private List<FileSystemEntity> _contents = new List<FileSystemEntity>();
 
-        [JsonConstructor]
-        public Folder(string name, List<FileSystemEntity> contents, DateTime creationDate, DateTime lastModifiedDate, DateTime lastAccessedDate)
-            : base(name, null)
+        public List<FileSystemEntity> Contents
         {
-            Contents = contents ?? new List<FileSystemEntity>();
-            CreationDate = creationDate;
-            LastModifiedDate = lastModifiedDate;
-            LastAccessedDate = lastAccessedDate;
+            get { return _contents; }
+            set { _contents = value; }
         }
 
         public Folder(string name, Folder parent) : base(name, parent)
         {
-            Contents = new List<FileSystemEntity>();
+            _contents = new List<FileSystemEntity>();
+            string fullPath = GetFullPath();
+            if (!Directory.Exists(fullPath))
+            {
+                Directory.CreateDirectory(fullPath);
+                CreationDate = Directory.GetCreationTime(fullPath);
+                LastModifiedDate = Directory.GetLastWriteTime(fullPath);
+                LastAccessedDate = Directory.GetLastAccessTime(fullPath);
+            }
         }
 
         public void AddEntity(FileSystemEntity entity)
@@ -42,6 +43,21 @@ namespace testonly.NewFolder
         {
             if (Contents.Remove(entity))
             {
+                string entityPath = Path.Combine(GetFullPath(), entity.Name);
+                if (entity is Folder)
+                {
+                    if (Directory.Exists(entityPath))
+                    {
+                        Directory.Delete(entityPath, true);
+                    }
+                }
+                else if (entity is File)
+                {
+                    if (System.IO.File.Exists(entityPath))
+                    {
+                        System.IO.File.Delete(entityPath);
+                    }
+                }
                 LastModifiedDate = DateTime.Now;
             }
             else

@@ -1,10 +1,7 @@
 ﻿using System;
-using System.IO;
 using System.Linq;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.IO;
 using System.Collections.Generic;
-using testonly.NewFolder;
 
 namespace FileStorageSystem
 {
@@ -13,126 +10,82 @@ namespace FileStorageSystem
         private Folder _rootFolder;
         private Folder _currentFolder;
         private HistoryLogger _historyLogger;
-        private static readonly string StorageFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "file_system.json");
+        private string _baseDirectory;
 
-        [JsonPropertyName("rootFolder")]
         public Folder RootFolder
         {
-            get => _rootFolder;
-            set => _rootFolder = value;
+            get { return _rootFolder; }
+            set { _rootFolder = value; }
         }
 
-        [JsonIgnore]
         public Folder CurrentFolder
         {
-            get => _currentFolder;
-            set => _currentFolder = value;
+            get { return _currentFolder; }
+            set { _currentFolder = value; }
         }
 
-        [JsonPropertyName("currentFolderPath")]
-        public string CurrentFolderPath { get; set; }
-
-        [JsonIgnore]
         public HistoryLogger Historylogger
         {
-            get => _historyLogger;
-            set => _historyLogger = value;
+            get { return _historyLogger; }
+            set { _historyLogger = value; }
         }
 
         public FileManager()
         {
+            _baseDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "FileStorage");
+            if (!Directory.Exists(_baseDirectory))
+            {
+                Directory.CreateDirectory(_baseDirectory);
+            }
             RootFolder = new Folder("root", null);
             CurrentFolder = RootFolder;
             _historyLogger = new HistoryLogger();
-            CurrentFolderPath = RootFolder.GetFullPath();
-            Directory.CreateDirectory(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "root"));
+            LoadPhysicalFileSystem(RootFolder, Path.Combine(_baseDirectory, "root"));
             Console.WriteLine("File System Initialized. Type 'help' for commands.");
         }
 
-        [JsonConstructor]
-        public FileManager(Folder rootFolder, string currentFolderPath)
-        {
-            RootFolder = rootFolder;
-            _historyLogger = new HistoryLogger();
-            CurrentFolderPath = currentFolderPath;
-            RebuildParentReferences(RootFolder, null);
-            CurrentFolder = string.IsNullOrEmpty(currentFolderPath) ? RootFolder : GetEntityFromPath(currentFolderPath) as Folder ?? RootFolder;
-            EnsureDirectoriesExist(RootFolder);
-            Console.WriteLine("File System Initialized. Type 'help' for commands.");
-        }
-
-        private void EnsureDirectoriesExist(Folder folder)
-        {
-            string folderPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, folder.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-            Directory.CreateDirectory(folderPath);
-            foreach (var entity in folder.Contents)
-            {
-                if (entity is Folder subFolder)
-                {
-                    EnsureDirectoriesExist(subFolder);
-                }
-                else if (entity is File file)
-                {
-                    file.UpdateFilePath();
-                }
-            }
-        }
-
-        public static FileManager Load()
+        private void LoadPhysicalFileSystem(Folder folder, string physicalPath)
         {
             try
             {
-                if (System.IO.File.Exists(StorageFilePath))
+                // Ensure the folder's physical directory exists
+                if (!Directory.Exists(physicalPath))
                 {
-                    string json = System.IO.File.ReadAllText(StorageFilePath);
-                    var options = new JsonSerializerOptions
+                    Directory.CreateDirectory(physicalPath);
+                }
+
+                // Load directories
+                foreach (var dir in Directory.GetDirectories(physicalPath))
+                {
+                    string dirName = Path.GetFileName(dir);
+                    if (folder.GetEntity(dirName) == null)
                     {
-                        Converters = { new FileSystemEntityConverter() }
-                    };
-                    return JsonSerializer.Deserialize<FileManager>(json, options);
+                        Folder newFolder = new Folder(dirName, folder);
+                        folder.AddEntity(newFolder);
+                        // Recursively load subdirectories
+                        LoadPhysicalFileSystem(newFolder, Path.Combine(physicalPath, dirName));
+                    }
+                }
+
+                // Load files
+                foreach (var file in Directory.GetFiles(physicalPath))
+                {
+                    string fileName = Path.GetFileName(file);
+                    if (folder.GetEntity(fileName) == null)
+                    {
+                        string content = System.IO.File.ReadAllText(file);
+                        File newFile = new File(fileName, folder, content);
+                        folder.AddEntity(newFile);
+                        // Update file metadata from physical file
+                        newFile.CreationDate = System.IO.File.GetCreationTime(file);
+                        newFile.LastModifiedDate = System.IO.File.GetLastWriteTime(file);
+                        newFile.LastAccessedDate = System.IO.File.GetLastAccessTime(file);
+                    }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error loading file system: {ex.Message}. Initializing new file system.");
-            }
-            return new FileManager();
-        }
-
-        public void Save()
-        {
-            try
-            {
-                CurrentFolderPath = CurrentFolder.GetFullPath();
-                var options = new JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    Converters = { new FileSystemEntityConverter() }
-                };
-                string json = JsonSerializer.Serialize(this, options);
-                System.IO.File.WriteAllText(StorageFilePath, json);
-                Console.WriteLine("File system metadata saved successfully.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error saving file system: {ex.Message}");
-            }
-        }
-
-        private void RebuildParentReferences(Folder folder, Folder parent)
-        {
-            folder.ParentFolder = parent;
-            foreach (var entity in folder.Contents)
-            {
-                entity.ParentFolder = folder;
-                if (entity is Folder subFolder)
-                {
-                    RebuildParentReferences(subFolder, folder);
-                }
-                else if (entity is File file)
-                {
-                    file.UpdateFilePath();
-                }
+                Console.WriteLine($"Error loading physical file system: {ex.Message}");
             }
         }
 
@@ -214,9 +167,6 @@ namespace FileStorageSystem
                     return;
                 }
 
-                string physicalParentPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, parent.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-                Directory.CreateDirectory(physicalParentPath);
-
                 File newFile = new File(fileName, parent, content);
                 parent.AddEntity(newFile);
                 Console.WriteLine($"File '{newFile.Name}' created in '{parent.GetFullPath()}'.");
@@ -244,10 +194,6 @@ namespace FileStorageSystem
                     return;
                 }
 
-                string physicalParentPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, parent.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-                string newFolderPath = Path.Combine(physicalParentPath, folderName);
-                Directory.CreateDirectory(newFolderPath);
-
                 Folder newFolder = new Folder(folderName, parent);
                 parent.AddEntity(newFolder);
                 Console.WriteLine($"Folder '{newFolder.Name}' created in '{parent.GetFullPath()}'.");
@@ -273,18 +219,6 @@ namespace FileStorageSystem
 
                 if (entityToDelete.ParentFolder != null)
                 {
-                    if (entityToDelete is File file)
-                    {
-                        file.DeletePhysicalFile();
-                    }
-                    else if (entityToDelete is Folder folder)
-                    {
-                        string folderPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, folder.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-                        if (Directory.Exists(folderPath))
-                        {
-                            Directory.Delete(folderPath, true);
-                        }
-                    }
                     entityToDelete.ParentFolder.RemoveEntity(entityToDelete);
                     Console.WriteLine($"'{entityToDelete.Name}' deleted.");
                 }
@@ -312,42 +246,23 @@ namespace FileStorageSystem
                     return;
                 }
 
+                string oldPath = entity.GetFullPath();
                 string oldName = entity.Name;
                 entity.Rename(newName);
-                if (entity is File file)
+                string newPath = entity.GetFullPath();
+                if (entity is Folder && Directory.Exists(oldPath))
                 {
-                    file.UpdateFilePath();
+                    Directory.Move(oldPath, newPath);
                 }
-                else if (entity is Folder folder)
+                else if (entity is File && System.IO.File.Exists(oldPath))
                 {
-                    string oldPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, folder.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-                    string newPath = Path.Combine(Path.GetDirectoryName(oldPath), newName);
-                    if (Directory.Exists(oldPath))
-                    {
-                        Directory.Move(oldPath, newPath);
-                    }
-                    UpdateFolderFilePaths(folder);
+                    System.IO.File.Move(oldPath, newPath);
                 }
                 Console.WriteLine($"'{oldName}' renamed to '{newName}'.");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error: {ex.Message}");
-            }
-        }
-
-        private void UpdateFolderFilePaths(Folder folder)
-        {
-            foreach (var entity in folder.Contents)
-            {
-                if (entity is File file)
-                {
-                    file.UpdateFilePath();
-                }
-                else if (entity is Folder subFolder)
-                {
-                    UpdateFolderFilePaths(subFolder);
-                }
             }
         }
 
@@ -373,27 +288,21 @@ namespace FileStorageSystem
                     return;
                 }
 
-                string sourcePhysicalPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, sourceEntity.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-                string destPhysicalPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, destinationFolder.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()), sourceEntity.Name);
-                if (sourceEntity is File && System.IO.File.Exists(sourcePhysicalPath))
-                {
-                    System.IO.File.Move(sourcePhysicalPath, destPhysicalPath);
-                }
-                else if (sourceEntity is Folder && Directory.Exists(sourcePhysicalPath))
-                {
-                    Directory.Move(sourcePhysicalPath, destPhysicalPath);
-                }
+                string sourceFullPath = sourceEntity.GetFullPath();
+                string destinationFullPath = Path.Combine(destinationFolder.GetFullPath(), sourceEntity.Name);
 
                 sourceEntity.ParentFolder.RemoveEntity(sourceEntity);
                 destinationFolder.AddEntity(sourceEntity);
-                if (sourceEntity is File file)
+
+                if (sourceEntity is Folder && Directory.Exists(sourceFullPath))
                 {
-                    file.UpdateFilePath();
+                    Directory.Move(sourceFullPath, destinationFullPath);
                 }
-                else if (sourceEntity is Folder folder)
+                else if (sourceEntity is File && System.IO.File.Exists(sourceFullPath))
                 {
-                    UpdateFolderFilePaths(folder);
+                    System.IO.File.Move(sourceFullPath, destinationFullPath);
                 }
+
                 Console.WriteLine($"Moved '{sourceEntity.Name}' from '{sourceEntity.ParentFolder.GetFullPath()}' to '{destinationFolder.GetFullPath()}'.");
             }
             catch (Exception ex)
@@ -418,18 +327,23 @@ namespace FileStorageSystem
                     return;
                 }
 
-                string destPhysicalPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, destinationFolder.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()), sourceEntity.Name);
                 if (sourceEntity is File sourceFile)
                 {
-                    File newFile = new File(sourceFile.Name, destinationFolder, sourceFile.GetContent());
+                    File newFile = new File(sourceFile.Name, destinationFolder, sourceFile.Content);
                     destinationFolder.AddEntity(newFile);
+                    string sourceFullPath = sourceFile.GetFullPath();
+                    string destinationFullPath = Path.Combine(destinationFolder.GetFullPath(), sourceFile.Name);
+                    if (System.IO.File.Exists(sourceFullPath))
+                    {
+                        System.IO.File.Copy(sourceFullPath, destinationFullPath);
+                    }
                     Console.WriteLine($"Copied file '{sourceFile.Name}' to '{destinationFolder.GetFullPath()}'.");
                 }
                 else if (sourceEntity is Folder sourceFolder)
                 {
-                    Directory.CreateDirectory(destPhysicalPath);
                     Folder newFolder = new Folder(sourceFolder.Name, destinationFolder);
                     destinationFolder.AddEntity(newFolder);
+
                     CopyFolderContents(sourceFolder, newFolder);
                     Console.WriteLine($"Copied folder '{sourceFolder.Name}' to '{destinationFolder.GetFullPath()}'.");
                 }
@@ -442,19 +356,21 @@ namespace FileStorageSystem
 
         public void CopyFolderContents(Folder source, Folder destination)
         {
-            string destPhysicalPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, destination.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-            Directory.CreateDirectory(destPhysicalPath);
             foreach (var entity in source.Contents)
             {
                 if (entity is File file)
                 {
-                    File newFile = new File(file.Name, destination, file.GetContent());
+                    File newFile = new File(file.Name, destination, file.Content);
                     destination.AddEntity(newFile);
+                    string sourcePath = file.GetFullPath();
+                    string destPath = newFile.GetFullPath();
+                    if (System.IO.File.Exists(sourcePath))
+                    {
+                        System.IO.File.Copy(sourcePath, destPath);
+                    }
                 }
                 else if (entity is Folder folder)
                 {
-                    string subFolderPath = Path.Combine(destPhysicalPath, folder.Name);
-                    Directory.CreateDirectory(subFolderPath);
                     Folder newSubFolder = new Folder(folder.Name, destination);
                     destination.AddEntity(newSubFolder);
                     CopyFolderContents(folder, newSubFolder);
@@ -495,7 +411,7 @@ namespace FileStorageSystem
                     folderToList = GetEntityFromPath(path) as Folder;
                     if (folderToList == null)
                     {
-                        Console.WriteLine("Error: Folder not found / Path pointing to a file instead of a folder.");
+                        Console.WriteLine("Error: Folder not found / Path pointing to a folder instead of a file.");
                         return;
                     }
                 }
@@ -513,7 +429,7 @@ namespace FileStorageSystem
             {
                 File file = GetEntityFromPath(path) as File;
                 if (file == null) { Console.WriteLine("Error: File not found / Path pointing to a folder instead of a file."); return; }
-                TextEditor.ViewText(file.GetContent());
+                TextEditor.ViewText(file.Content);
                 _historyLogger.LogAccess(file.GetFullPath(), DateTime.Now);
             }
             catch (Exception ex)
@@ -529,7 +445,7 @@ namespace FileStorageSystem
                 File file = GetEntityFromPath(path) as File;
                 if (file == null) { Console.WriteLine("Error: File not found / Path pointing to a folder instead of a file."); return; }
 
-                string editedContent = TextEditor.EditText(file.GetContent());
+                string editedContent = TextEditor.EditText(file.Content);
                 file.Edit(editedContent);
                 _historyLogger.LogAccess(file.GetFullPath(), DateTime.Now);
             }
@@ -564,7 +480,7 @@ namespace FileStorageSystem
         {
             foreach (var entity in currentFolder.Contents)
             {
-                bool match = entity.Name.Contains(searchTerm, StringComparison.OrdinalIgnoreCase);
+                bool match = entity.Name.Contains(searchTerm);
 
                 if (match)
                 {
@@ -618,36 +534,6 @@ namespace FileStorageSystem
         public void PrintWorkingDirectory()
         {
             Console.WriteLine($"Current directory: {CurrentFolder.GetFullPath()}");
-        }
-    }
-
-    public class FileSystemEntityConverter : JsonConverter<FileSystemEntity>
-    {
-        public override FileSystemEntity Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-        {
-            using (var jsonDoc = JsonDocument.ParseValue(ref reader))
-            {
-                if (jsonDoc.RootElement.TryGetProperty("contents", out _))
-                {
-                    return jsonDoc.RootElement.Deserialize<Folder>(options);
-                }
-                else
-                {
-                    return jsonDoc.RootElement.Deserialize<File>(options);
-                }
-            }
-        }
-
-        public override void Write(Utf8JsonWriter writer, FileSystemEntity value, JsonSerializerOptions options)
-        {
-            if (value is File file)
-            {
-                JsonSerializer.Serialize(writer, file, options);
-            }
-            else if (value is Folder folder)
-            {
-                JsonSerializer.Serialize(writer, folder, options);
-            }
         }
     }
 }

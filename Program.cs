@@ -1,6 +1,6 @@
 ﻿using System;
+using System.Data;
 using System.Linq;
-using testonly.NewFolder;
 
 namespace FileStorageSystem
 {
@@ -49,9 +49,10 @@ namespace FileStorageSystem
             };
         }
 
+
         public static void Main(string[] args)
         {
-            FileManager fileManager = FileManager.Load();
+            FileManager fileManager = new FileManager();
             Console.WriteLine("C# File Storage System\nAuthor: Peh Yan Bin");
             fileManager.PrintWorkingDirectory();
 
@@ -186,6 +187,7 @@ namespace FileStorageSystem
                             if (parts.Length > 1)
                             {
                                 string searchTerm = parts[1];
+
                                 fileManager.SearchFiles(searchTerm);
                             }
                             else
@@ -197,11 +199,10 @@ namespace FileStorageSystem
                             fileManager.DisplayHistory();
                             break;
                         case Commands.Exit:
-                            fileManager.Save();
                             Console.WriteLine("File System shutted down.");
                             return;
-                        case Commands.Unknown:
-                            Console.WriteLine($"Error: Unknown command '{parts[0]}'. Type 'help' for available commands.");
+                        default:
+                            Console.WriteLine($"Error: Unknown command '{command}'. Type 'help' for available commands.");
                             break;
                     }
                 }

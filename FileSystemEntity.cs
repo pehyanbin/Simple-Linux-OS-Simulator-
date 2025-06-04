@@ -1,27 +1,43 @@
 ﻿using System;
 using System.IO;
-using System.Text.Json.Serialization;
 
-namespace testonly.NewFolder
+namespace FileStorageSystem
 {
     public abstract class FileSystemEntity
     {
-        [JsonPropertyName("name")]
-        public string Name { get; set; }
+        private string _name;
+        private DateTime _creationDate;
+        private DateTime _lastModifiedDate;
+        private DateTime _lastAccessedDate;
+        private Folder _parentFolder;
 
-        [JsonPropertyName("creationDate")]
-        public DateTime CreationDate { get; set; }
+        public string Name
+        {
+            get { return _name; }
+            set { _name = value; }
+        }
+        public DateTime CreationDate
+        {
+            get { return _creationDate; }
+            set { _creationDate = value; }
+        }
+        public DateTime LastModifiedDate
+        {
+            get { return _lastModifiedDate; }
+            set { _lastModifiedDate = value; }
+        }
+        public DateTime LastAccessedDate
+        {
+            get { return _lastAccessedDate; }
+            set { _lastAccessedDate = value; }
+        }
+        public Folder ParentFolder
+        {
+            get { return _parentFolder; }
+            set { _parentFolder = value; }
+        }
 
-        [JsonPropertyName("lastModifiedDate")]
-        public DateTime LastModifiedDate { get; set; }
-
-        [JsonPropertyName("lastAccessedDate")]
-        public DateTime LastAccessedDate { get; set; }
-
-        [JsonIgnore]
-        public Folder ParentFolder { get; set; }
-
-        protected FileSystemEntity(string name, Folder parent)
+        public FileSystemEntity(string name, Folder parent)
         {
             Name = name;
             CreationDate = DateTime.Now;
@@ -49,9 +65,10 @@ namespace testonly.NewFolder
 
         public string GetFullPath()
         {
+            string basePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "FileStorage");
             if (ParentFolder == null)
             {
-                return Name;
+                return Path.Combine(basePath, Name);
             }
             return Path.Combine(ParentFolder.GetFullPath(), Name);
         }

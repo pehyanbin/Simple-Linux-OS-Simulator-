@@ -1,100 +1,93 @@
 ﻿using System;
 using System.IO;
 using System.Linq;
-using System.Text.Json.Serialization;
-using System.Xml.Linq;
-using testonly.NewFolder;
 
 namespace FileStorageSystem
 {
     public class File : FileSystemEntity
     {
-        public string FilePath { get; private set; }
-
-        [JsonConstructor]
-        public File(string name, DateTime creationDate, DateTime lastModifiedDate, DateTime lastAccessedDate)
-            : base(name, null)
+        private string _content;
+        public string Content
         {
-            CreationDate = creationDate;
-            LastModifiedDate = lastModifiedDate;
-            LastAccessedDate = lastAccessedDate;
+            get
+            {
+                LastAccessedDate = DateTime.Now;
+                string filePath = GetFullPath();
+                if (System.IO.File.Exists(filePath))
+                {
+                    _content = System.IO.File.ReadAllText(filePath);
+                }
+                return _content;
+            }
+            set
+            {
+                _content = value;
+                LastModifiedDate = DateTime.Now;
+                string filePath = GetFullPath();
+                System.IO.File.WriteAllText(filePath, _content);
+            }
         }
 
         public File(string name, Folder parent, string content = "") : base(name, parent)
         {
-            FilePath = Path.Combine(GetPhysicalFolderPath(), $"{name}.txt");
-            System.IO.File.WriteAllText(FilePath, content);
-        }
-
-        private string GetPhysicalFolderPath()
-        {
-            string basePath = AppDomain.CurrentDomain.BaseDirectory;
-            string folderPath = ParentFolder?.GetFullPath() ?? "root";
-            return Path.Combine(basePath, folderPath.Replace("/", Path.DirectorySeparatorChar.ToString()));
-        }
-
-        public string GetContent()
-        {
-            LastAccessedDate = DateTime.Now;
-            return System.IO.File.Exists(FilePath) ? System.IO.File.ReadAllText(FilePath) : "";
-        }
-
-        public void SetContent(string content)
-        {
-            System.IO.File.WriteAllText(FilePath, content);
-            LastModifiedDate = DateTime.Now;
+            _content = content;
+            string filePath = GetFullPath();
+            
+            if (!System.IO.File.Exists(filePath))
+            {
+                System.IO.File.WriteAllText(filePath+".txt", content);
+            }
         }
 
         public override long GetSize()
         {
-            if (System.IO.File.Exists(FilePath))
+            string filePath = GetFullPath();
+            if (System.IO.File.Exists(filePath))
             {
-                return new FileInfo(FilePath).Length;
+                return new FileInfo(filePath).Length;
             }
-            return 0;
+            return Content.Length;
         }
 
         public void Edit(string newContent)
         {
-            SetContent(newContent);
+            Content = newContent;
             Console.WriteLine($"File '{Name}' content updated.");
         }
 
         public void AppendContent(string contentToAppend)
         {
-            System.IO.File.AppendAllText(FilePath, contentToAppend);
-            LastModifiedDate = DateTime.Now;
+            Content += contentToAppend;
             Console.WriteLine($"Content appended to '{Name}'.");
         }
 
         public void PrependContent(string contentToPrepend)
         {
-            string currentContent = GetContent();
-            SetContent(contentToPrepend + currentContent);
+            Content = contentToPrepend + Content;
             Console.WriteLine($"Content prepended to '{Name}'.");
         }
 
         public void InsertContent(int lineNumber, string contentToInsert)
         {
-            var lines = GetContent().Split(new[] { Environment.NewLine }, StringSplitOptions.None).ToList();
+            var lines = Content.Split(new[] { Environment.NewLine }, StringSplitOptions.None).ToList();
             if (lineNumber < 1 || lineNumber > lines.Count + 1)
             {
                 throw new ArgumentOutOfRangeException("Line number out of range.");
             }
             lines.Insert(lineNumber - 1, contentToInsert);
-            SetContent(string.Join(Environment.NewLine, lines));
+            Content = string.Join(Environment.NewLine, lines);
             Console.WriteLine($"Content inserted at line {lineNumber} in '{Name}'.");
         }
 
         public void DeleteLine(int lineNumber)
         {
-            var lines = GetContent().Split(new[] { Environment.NewLine }, StringSplitOptions.None).ToList();
+            var lines = Content.Split(new[] { Environment.NewLine }, StringSplitOptions.None).ToList();
             if (lineNumber < 1 || lineNumber > lines.Count)
             {
                 throw new ArgumentOutOfRangeException("Line number out of range.");
             }
             lines.RemoveAt(lineNumber - 1);
-            SetContent(string.Join(Environment.NewLine, lines));
+            Content = string.Join(Environment.NewLine, lines);
             Console.WriteLine($"Line {lineNumber} deleted from '{Name}'.");
         }
 
@@ -102,26 +95,8 @@ namespace FileStorageSystem
         {
             LastAccessedDate = DateTime.Now;
             Console.WriteLine($"--- Content of {Name} ---");
-            Console.WriteLine(GetContent());
+            Console.WriteLine(Content);
             Console.WriteLine("--------------------------");
-        }
-
-        public void UpdateFilePath()
-        {
-            string oldPath = FilePath;
-            FilePath = Path.Combine(GetPhysicalFolderPath(), $"{Name}.txt");
-            if (System.IO.File.Exists(oldPath))
-            {
-                System.IO.File.Move(oldPath, FilePath);
-            }
-        }
-
-        public void DeletePhysicalFile()
-        {
-            if (System.IO.File.Exists(FilePath))
-            {
-                System.IO.File.Delete(FilePath);
-            }
         }
     }
 }
