@@ -411,7 +411,7 @@ namespace FileStorageSystem
                     folderToList = GetEntityFromPath(path) as Folder;
                     if (folderToList == null)
                     {
-                        Console.WriteLine("Error: Folder not found / Path pointing to a folder instead of a file.");
+                        Console.WriteLine("Error: Folder not found / Path pointing to a file instead of a folder.");
                         return;
                     }
                 }
