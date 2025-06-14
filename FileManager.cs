@@ -1,605 +1,795 @@
-﻿using System;
-using System.IO;
-using System.Linq;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Collections.Generic;
-using testonly.NewFolder;
+﻿using System; // Imports the System namespace, providing fundamental classes and base types.
+using System.Linq; // Imports the System.Linq namespace, for LINQ (Language Integrated Query) operations.
+using System.IO; // Imports the System.IO namespace, for input/output operations like file and directory manipulation.
+using System.Collections.Generic; // Imports the System.Collections.Generic namespace, for generic collection types like List.
 
-namespace FileStorageSystem
+namespace FileStorageSystem // Defines the namespace for the file storage system.
 {
-    public class FileManager
+    public class FileManager // Declares the public class FileManager, responsible for managing file system operations.
     {
-        private Folder _rootFolder;
-        private Folder _currentFolder;
-        private HistoryLogger _historyLogger;
-        private static readonly string StorageFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "file_system.json");
+        private Folder _rootFolder; // Declares a private field to store the root folder of the file system.
+        private Folder _currentFolder; // Declares a private field to store the current working folder.
+        private HistoryLogger _historyLogger; // Declares a private field for logging file access history.
+        private string _baseDirectory; // Declares a private field to store the base physical directory for storage.
+        private Folder _recycleBinFolder; // Declares a private field to store the recycle bin folder.
+        // Stores the original full path of items moved to the recycle bin.
+        // Key: Current full path in Recycle Bin, Value: Original full path.
+        private Dictionary<string, string> _recycleBinMap;
 
-        [JsonPropertyName("rootFolder")]
-        public Folder RootFolder
+        public Folder RootFolder // Public property to get or set the root folder.
         {
-            get => _rootFolder;
-            set => _rootFolder = value;
+            get { return _rootFolder; } // Getter for RootFolder.
+            set { _rootFolder = value; } // Setter for RootFolder.
         }
 
-        [JsonIgnore]
-        public Folder CurrentFolder
+        public Folder CurrentFolder // Public property to get or set the current folder.
         {
-            get => _currentFolder;
-            set => _currentFolder = value;
+            get { return _currentFolder; } // Getter for CurrentFolder.
+            set { _currentFolder = value; } // Setter for CurrentFolder.
         }
 
-        [JsonPropertyName("currentFolderPath")]
-        public string CurrentFolderPath { get; set; }
-
-        [JsonIgnore]
-        public HistoryLogger Historylogger
+        public HistoryLogger Historylogger // Public property to get or set the history logger.
         {
-            get => _historyLogger;
-            set => _historyLogger = value;
+            get { return _historyLogger; } // Getter for Historylogger.
+            set { _historyLogger = value; } // Setter for Historylogger.
         }
 
-        public FileManager()
+        public FileManager() // Constructor for the FileManager class.
         {
-            RootFolder = new Folder("root", null);
-            CurrentFolder = RootFolder;
-            _historyLogger = new HistoryLogger();
-            CurrentFolderPath = RootFolder.GetFullPath();
-            Directory.CreateDirectory(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "root"));
-            Console.WriteLine("File System Initialized. Type 'help' for commands.");
-        }
-
-        [JsonConstructor]
-        public FileManager(Folder rootFolder, string currentFolderPath)
-        {
-            RootFolder = rootFolder;
-            _historyLogger = new HistoryLogger();
-            CurrentFolderPath = currentFolderPath;
-            RebuildParentReferences(RootFolder, null);
-            CurrentFolder = string.IsNullOrEmpty(currentFolderPath) ? RootFolder : GetEntityFromPath(currentFolderPath) as Folder ?? RootFolder;
-            EnsureDirectoriesExist(RootFolder);
-            Console.WriteLine("File System Initialized. Type 'help' for commands.");
-        }
-
-        private void EnsureDirectoriesExist(Folder folder)
-        {
-            string folderPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, folder.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-            Directory.CreateDirectory(folderPath);
-            foreach (var entity in folder.Contents)
+            // Combines the application's base directory with "FileStorage" to create the absolute base directory path.
+            _baseDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "FileStorage");
+            if (!Directory.Exists(_baseDirectory)) // Checks if the base directory does not exist.
             {
-                if (entity is Folder subFolder)
-                {
-                    EnsureDirectoriesExist(subFolder);
-                }
-                else if (entity is File file)
-                {
-                    file.UpdateFilePath();
-                }
+                Directory.CreateDirectory(_baseDirectory); // Creates the base directory if it doesn't exist.
             }
+            RootFolder = new Folder("root", null); // Initializes the root folder with the name "root" and no parent.
+            CurrentFolder = RootFolder; // Sets the current folder to the root folder.
+            _historyLogger = new HistoryLogger(); // Initializes a new instance of the HistoryLogger.
+
+            // Initialize Recycle Bin folder and map
+            _recycleBinFolder = new Folder("RecycleBin", RootFolder);
+            RootFolder.AddEntity(_recycleBinFolder); // Add RecycleBin to root folder
+            _recycleBinMap = new Dictionary<string, string>();
+
+            // Ensure physical RecycleBin folder exists
+            string recycleBinPhysicalPath = _recycleBinFolder.GetFullPath();
+            if (!Directory.Exists(recycleBinPhysicalPath))
+            {
+                Directory.CreateDirectory(recycleBinPhysicalPath);
+            }
+            // Load contents of RecycleBin from physical disk (original paths won't be remembered across sessions this way)
+            LoadPhysicalFileSystem(RootFolder, Path.Combine(_baseDirectory, "root"));
+            LoadPhysicalRecycleBin(_recycleBinFolder, recycleBinPhysicalPath); // Load physical items into recycle bin in-memory structure
+
+            Console.WriteLine("File System Initialized. Type 'help' for commands."); // Informs the user that the file system is initialized.
         }
 
-        public static FileManager Load()
+        // Recursively loads the physical file system (directories and files) into the in-memory folder structure.
+        private void LoadPhysicalFileSystem(Folder folder, string physicalPath)
         {
             try
             {
-                if (System.IO.File.Exists(StorageFilePath))
+                // Ensure the folder's physical directory exists
+                if (!Directory.Exists(physicalPath)) // Checks if the physical directory for the current folder exists.
                 {
-                    string json = System.IO.File.ReadAllText(StorageFilePath);
-                    var options = new JsonSerializerOptions
+                    Directory.CreateDirectory(physicalPath); // Creates the directory if it doesn't exist.
+                }
+
+                // Load directories
+                foreach (var dir in Directory.GetDirectories(physicalPath)) // Iterates through all subdirectories in the physical path.
+                {
+                    string dirName = Path.GetFileName(dir); // Gets the name of the directory.
+                    if (folder.GetEntity(dirName) == null) // Checks if a folder with the same name doesn't already exist in the in-memory structure.
                     {
-                        Converters = { new FileSystemEntityConverter() }
-                    };
-                    return JsonSerializer.Deserialize<FileManager>(json, options);
+                        Folder newFolder = new Folder(dirName, folder); // Creates a new in-memory Folder object.
+                        folder.AddEntity(newFolder); // Adds the new folder to the current in-memory folder's contents.
+                        // Recursively load subdirectories
+                        LoadPhysicalFileSystem(newFolder, Path.Combine(physicalPath, dirName)); // Recursively calls itself for the new subfolder.
+                    }
+                }
+
+                // Load files
+                foreach (var file in Directory.GetFiles(physicalPath)) // Iterates through all files in the physical path.
+                {
+                    string fileName = Path.GetFileName(file); // Gets the name of the file.
+                    if (folder.GetEntity(fileName) == null) // Checks if a file with the same name doesn't already exist in the in-memory structure.
+                    {
+                        string content = System.IO.File.ReadAllText(file); // Reads all text content from the physical file.
+                        File newFile = new File(fileName, folder, content); // Creates a new in-memory File object with the content.
+                        folder.AddEntity(newFile); // Adds the new file to the current in-memory folder's contents.
+                        // Update file metadata from physical file
+                        newFile.CreationDate = System.IO.File.GetCreationTime(file); // Sets the creation date from the physical file.
+                        newFile.LastModifiedDate = System.IO.File.GetLastWriteTime(file); // Sets the last modified date from the physical file.
+                        newFile.LastAccessedDate = System.IO.File.GetLastAccessTime(file); // Sets the last accessed date from the physical file.
+                    }
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catches any exceptions that occur during the loading process.
             {
-                Console.WriteLine($"Error loading file system: {ex.Message}. Initializing new file system.");
+                Console.WriteLine($"Error loading physical file system: {ex.Message}"); // Prints an error message to the console.
             }
-            return new FileManager();
         }
 
-        public void Save()
+        // Recursively loads the physical contents of the Recycle Bin into the in-memory structure.
+        private void LoadPhysicalRecycleBin(Folder recycleBinFolder, string physicalPath)
         {
             try
             {
-                CurrentFolderPath = CurrentFolder.GetFullPath();
-                var options = new JsonSerializerOptions
+                if (!Directory.Exists(physicalPath))
                 {
-                    WriteIndented = true,
-                    Converters = { new FileSystemEntityConverter() }
-                };
-                string json = JsonSerializer.Serialize(this, options);
-                System.IO.File.WriteAllText(StorageFilePath, json);
-                Console.WriteLine("File system metadata saved successfully.");
+                    Directory.CreateDirectory(physicalPath);
+                }
+
+                // Load directories in Recycle Bin
+                foreach (var dir in Directory.GetDirectories(physicalPath))
+                {
+                    string dirName = Path.GetFileName(dir);
+                    if (recycleBinFolder.GetEntity(dirName) == null)
+                    {
+                        Folder newFolder = new Folder(dirName, recycleBinFolder);
+                        recycleBinFolder.AddEntity(newFolder);
+                        // Original path is unknown for items loaded from disk on startup, so it won't be in _recycleBinMap.
+                        // They can still be restored to root.
+                    }
+                }
+
+                // Load files in Recycle Bin
+                foreach (var file in Directory.GetFiles(physicalPath))
+                {
+                    string fileName = Path.GetFileName(file);
+                    if (recycleBinFolder.GetEntity(fileName) == null)
+                    {
+                        string content = System.IO.File.ReadAllText(file);
+                        File newFile = new File(fileName, recycleBinFolder, content);
+                        recycleBinFolder.AddEntity(newFile);
+                        // Original path is unknown for items loaded from disk on startup.
+                    }
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error saving file system: {ex.Message}");
+                Console.WriteLine($"Error loading physical recycle bin: {ex.Message}");
             }
         }
 
-        private void RebuildParentReferences(Folder folder, Folder parent)
-        {
-            folder.ParentFolder = parent;
-            foreach (var entity in folder.Contents)
-            {
-                entity.ParentFolder = folder;
-                if (entity is Folder subFolder)
-                {
-                    RebuildParentReferences(subFolder, folder);
-                }
-                else if (entity is File file)
-                {
-                    file.UpdateFilePath();
-                }
-            }
-        }
-
+        // Retrieves a FileSystemEntity (file or folder) from a given path.
         public FileSystemEntity GetEntityFromPath(string path)
         {
-            Folder startingFolder = CurrentFolder;
-            if (path.StartsWith("/"))
+            Folder startingFolder = CurrentFolder; // Starts the search from the current folder by default.
+            if (path.StartsWith("/") || path.StartsWith("\\")) // Checks if the path is an absolute path (starts with '/' or '\').
             {
-                startingFolder = RootFolder;
-                path = path.Substring(1);
+                startingFolder = RootFolder; // If absolute, start from the root folder.
+                path = path.Substring(1); // Removes the leading '/' or '\' from the path.
             }
 
-            string[] pathParts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            FileSystemEntity currentEntity = startingFolder;
+            // Splits the path into individual parts (folder/file names) using path separators, removing empty entries.
+            string[] pathParts = path.Split(new char[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
+            FileSystemEntity currentEntity = startingFolder; // Sets the current entity to the starting folder.
 
-            if (pathParts.Length == 0 && path == "/") return RootFolder;
+            if (pathParts.Length == 0 && (path == "/" || path == "\\")) return RootFolder; // If the path is just "/" or "\", return the RootFolder.
 
-            foreach (string part in pathParts)
+            foreach (string part in pathParts) // Iterates through each part of the path.
             {
-                if (currentEntity is Folder folder)
+                if (currentEntity is Folder folder) // Checks if the current entity is a folder.
                 {
-                    if (part == ".") continue;
-                    if (part == "..")
+                    if (part == ".") continue; // If the part is ".", it means current directory, so continue to the next part.
+                    if (part == "..") // If the part is "..", it means parent directory.
                     {
-                        if (folder.ParentFolder != null)
+                        if (folder.ParentFolder != null) // Checks if the current folder has a parent.
                         {
-                            currentEntity = folder.ParentFolder;
+                            currentEntity = folder.ParentFolder; // Moves up to the parent folder.
                         }
                         else
                         {
-                            return null;
+                            return null; // If no parent (e.g., trying to 'cd ..' from root), return null.
                         }
                     }
                     else
                     {
-                        currentEntity = folder.GetEntity(part);
-                        if (currentEntity == null)
+                        currentEntity = folder.GetEntity(part); // Tries to get the entity (file or folder) with the current part's name from the current folder.
+                        if (currentEntity == null) // If the entity is not found.
                         {
-                            return null;
+                            return null; // Return null.
                         }
                     }
                 }
                 else
                 {
-                    return null;
+                    return null; // If the current entity is not a folder but the path still has parts, it's an invalid path.
                 }
             }
-            return currentEntity;
+            return currentEntity; // Returns the found FileSystemEntity.
         }
 
+        // Retrieves the parent folder from a given path.
         public Folder GetParentFolderFromPath(string path)
         {
-            string directoryPath = Path.GetDirectoryName(path);
-            if (string.IsNullOrEmpty(directoryPath))
+            // If the path is a simple name (no directory separators), its parent is the current folder.
+            if (!path.Contains("/") && !path.Contains("\\"))
             {
                 return CurrentFolder;
             }
+
+            // Extract the directory part of the path.
+            string directoryPath = Path.GetDirectoryName(path);
+
+            if (string.IsNullOrEmpty(directoryPath))
+            {
+                // If the path starts with a separator (e.g., "/myFile.txt"), its parent is the root.
+                if (path.StartsWith("/") || path.StartsWith("\\"))
+                {
+                    return RootFolder;
+                }
+                return null; // This case should ideally not be reached for valid paths.
+            }
+
+            // For paths like "folder/file.txt" or "../folder/file.txt", find the entity for the directory path.
             return GetEntityFromPath(directoryPath) as Folder;
         }
 
+        // Retrieves the entity name (file or folder name) from a given path.
         public string GetEntityNameFromPath(string path)
         {
-            return Path.GetFileName(path);
+            return Path.GetFileName(path); // Uses Path.GetFileName to extract the name.
         }
 
+        // Creates a new file at the specified path with optional content.
         public void CreateFile(string path, string content = "")
         {
             try
             {
-                Folder parent = GetParentFolderFromPath(path);
-                if (parent == null) { Console.WriteLine("Error: Parent directory not found."); return; }
+                Folder parent = GetParentFolderFromPath(path); // Gets the parent folder where the file should be created.
+                if (parent == null) { Console.WriteLine("Error: Parent directory not found."); return; } // Error if parent not found.
 
-                string fileName = GetEntityNameFromPath(path);
-                if (string.IsNullOrEmpty(fileName)) { Console.WriteLine("Error: File name cannot be empty."); return; }
+                string fileName = GetEntityNameFromPath(path); // Gets the name of the file to be created.
+                if (string.IsNullOrEmpty(fileName)) { Console.WriteLine("Error: File name cannot be empty."); return; } // Error if file name is empty.
 
-                if (parent.GetEntity(fileName) != null)
+                if (parent.GetEntity(fileName) != null) // Checks if an entity with the same name already exists in the parent folder.
                 {
-                    Console.WriteLine($"Error: File '{fileName}' already exists in '{parent.GetFullPath()}'.");
+                    Console.WriteLine($"Error: File '{fileName}' already exists in '{parent.GetFullPath()}'."); // Error if file exists.
                     return;
                 }
 
-                string physicalParentPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, parent.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-                Directory.CreateDirectory(physicalParentPath);
-
-                File newFile = new File(fileName, parent, content);
-                parent.AddEntity(newFile);
-                Console.WriteLine($"File '{newFile.Name}' created in '{parent.GetFullPath()}'.");
-                _historyLogger.LogAccess(newFile.GetFullPath(), DateTime.Now);
+                File newFile = new File(fileName, parent, content); // Creates a new File object.
+                parent.AddEntity(newFile); // Adds the new file to the parent folder's contents.
+                Console.WriteLine($"File '{newFile.Name}' created in '{parent.GetFullPath()}'."); // Confirmation message.
+                _historyLogger.LogAccess(newFile.GetFullPath(), DateTime.Now); // Logs the file creation as an access event.
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catches any exceptions during file creation.
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine($"Error: {ex.Message}"); // Prints the error message.
             }
         }
 
+        // Creates a new folder at the specified path.
         public void CreateFolder(string path)
         {
             try
             {
-                Folder parent = GetParentFolderFromPath(path);
-                if (parent == null) { Console.WriteLine("Error: Parent directory not found."); return; }
+                Folder parent = GetParentFolderFromPath(path); // Gets the parent folder.
+                if (parent == null) { Console.WriteLine("Error: Parent directory not found."); return; } // Error if parent not found.
 
-                string folderName = GetEntityNameFromPath(path);
-                if (string.IsNullOrEmpty(folderName)) { Console.WriteLine("Error: Folder name cannot be empty."); return; }
+                string folderName = GetEntityNameFromPath(path); // Gets the name of the folder to be created.
+                if (string.IsNullOrEmpty(folderName)) { Console.WriteLine("Error: Folder name cannot be empty."); return; } // Error if folder name is empty.
 
-                if (parent.GetEntity(folderName) != null)
+                if (parent.GetEntity(folderName) != null) // Checks if a folder with the same name already exists.
                 {
-                    Console.WriteLine($"Error: Folder '{folderName}' already exists in '{parent.GetFullPath()}'.");
+                    Console.WriteLine($"Error: Folder '{folderName}' already exists in '{parent.GetFullPath()}'."); // Error if folder exists.
                     return;
                 }
 
-                string physicalParentPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, parent.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-                string newFolderPath = Path.Combine(physicalParentPath, folderName);
-                Directory.CreateDirectory(newFolderPath);
-
-                Folder newFolder = new Folder(folderName, parent);
-                parent.AddEntity(newFolder);
-                Console.WriteLine($"Folder '{newFolder.Name}' created in '{parent.GetFullPath()}'.");
+                Folder newFolder = new Folder(folderName, parent); // Creates a new Folder object.
+                parent.AddEntity(newFolder); // Adds the new folder to the parent's contents.
+                Console.WriteLine($"Folder '{newFolder.Name}' created in '{parent.GetFullPath()}'."); // Confirmation message.
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catches any exceptions during folder creation.
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine($"Error: {ex.Message}"); // Prints the error message.
             }
         }
 
+        // Deletes a file or folder at the specified path by moving it to the Recycle Bin.
         public void DeleteEntity(string path)
         {
             try
             {
-                FileSystemEntity entityToDelete = GetEntityFromPath(path);
-                if (entityToDelete == null) { Console.WriteLine("Error: File or folder not found."); return; }
+                FileSystemEntity entityToDelete = GetEntityFromPath(path); // Gets the entity to be deleted.
+                if (entityToDelete == null) { Console.WriteLine("Error: File or folder not found."); return; } // Error if entity not found.
 
-                if (entityToDelete == RootFolder)
+                if (entityToDelete == RootFolder || entityToDelete == _recycleBinFolder) // Prevents deleting root or recycle bin itself
                 {
-                    Console.WriteLine("Error: Cannot delete the root folder.");
+                    Console.WriteLine("Error: Cannot delete the root folder or the Recycle Bin itself.");
                     return;
                 }
 
-                if (entityToDelete.ParentFolder != null)
+                // Ensure the entity has a valid parent before attempting to remove it from there.
+                // This check addresses the potential NullReferenceException at line 213.
+                if (entityToDelete.ParentFolder == null)
                 {
-                    if (entityToDelete is File file)
-                    {
-                        file.DeletePhysicalFile();
-                    }
-                    else if (entityToDelete is Folder folder)
-                    {
-                        string folderPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, folder.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-                        if (Directory.Exists(folderPath))
-                        {
-                            Directory.Delete(folderPath, true);
-                        }
-                    }
-                    entityToDelete.ParentFolder.RemoveEntity(entityToDelete);
-                    Console.WriteLine($"'{entityToDelete.Name}' deleted.");
+                    Console.WriteLine("Error: Cannot delete entity without a valid parent folder (internal inconsistency).");
+                    return;
                 }
-                else
+
+                Folder parentFolder = entityToDelete.ParentFolder; // The parent folder of the entity to delete.
+                string originalFullPath = entityToDelete.GetFullPath(); // Get original full path before moving
+
+                // Remove from current parent's contents (This was previously line 213)
+                parentFolder.RemoveEntity(entityToDelete);
+
+                // Move in-memory entity to RecycleBin folder
+                _recycleBinFolder.AddEntity(entityToDelete);
+                entityToDelete.ParentFolder = _recycleBinFolder; // Update its parent to RecycleBin in-memory
+
+                // Update physical file/folder location
+                string sourcePhysicalPath = originalFullPath;
+                string destinationPhysicalPath = Path.Combine(_recycleBinFolder.GetFullPath(), entityToDelete.Name);
+
+                if (entityToDelete is Folder && Directory.Exists(sourcePhysicalPath))
                 {
-                    Console.WriteLine("Error: Cannot delete entity without a parent folder (should not happen for non-root).");
+                    Directory.Move(sourcePhysicalPath, destinationPhysicalPath);
                 }
+                else if (entityToDelete is File && System.IO.File.Exists(sourcePhysicalPath))
+                {
+                    System.IO.File.Move(sourcePhysicalPath, destinationPhysicalPath);
+                }
+                // Store original path in the map for restore
+                _recycleBinMap[destinationPhysicalPath] = originalFullPath;
+
+                Console.WriteLine($"'{entityToDelete.Name}' moved to Recycle Bin.");
+                _historyLogger.LogAccess(originalFullPath + " (deleted to Recycle Bin)", DateTime.Now);
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catches any exceptions during deletion.
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine($"Error deleting entity: {ex.Message}"); // Prints the error message.
             }
         }
 
+        // Renames a file or folder.
         public void RenameEntity(string path, string newName)
         {
             try
             {
-                FileSystemEntity entity = GetEntityFromPath(path);
-                if (entity == null) { Console.WriteLine("Error: File or folder not found."); return; }
+                FileSystemEntity entity = GetEntityFromPath(path); // Gets the entity to be renamed.
+                if (entity == null) { Console.WriteLine("Error: File or folder not found."); return; } // Error if entity not found.
 
-                if (entity == RootFolder)
+                if (entity == RootFolder || entity == _recycleBinFolder) // Prevent renaming root or recycle bin
                 {
-                    Console.WriteLine("Error: Cannot rename the root folder.");
+                    Console.WriteLine("Error: Cannot rename the root folder or the Recycle Bin.");
                     return;
                 }
 
-                string oldName = entity.Name;
-                entity.Rename(newName);
-                if (entity is File file)
+                string oldPath = entity.GetFullPath(); // Gets the old full path of the entity.
+                string oldName = entity.Name; // Stores the old name.
+                entity.Rename(newName); // Calls the Rename method on the entity (updates in-memory name).
+                string newPath = entity.GetFullPath(); // Gets the new full path of the entity.
+
+                // If the entity is a folder and its physical directory exists, move the physical directory.
+                if (entity is Folder && Directory.Exists(oldPath))
                 {
-                    file.UpdateFilePath();
+                    Directory.Move(oldPath, newPath);
                 }
-                else if (entity is Folder folder)
+                // If the entity is a file and its physical file exists, move the physical file.
+                else if (entity is File && System.IO.File.Exists(oldPath))
                 {
-                    string oldPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, folder.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-                    string newPath = Path.Combine(Path.GetDirectoryName(oldPath), newName);
-                    if (Directory.Exists(oldPath))
-                    {
-                        Directory.Move(oldPath, newPath);
-                    }
-                    UpdateFolderFilePaths(folder);
+                    System.IO.File.Move(oldPath, newPath);
                 }
-                Console.WriteLine($"'{oldName}' renamed to '{newName}'.");
+                Console.WriteLine($"'{oldName}' renamed to '{newName}'."); // Confirmation message.
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catches any exceptions during renaming.
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine($"Error: {ex.Message}"); // Prints the error message.
             }
         }
 
-        private void UpdateFolderFilePaths(Folder folder)
-        {
-            foreach (var entity in folder.Contents)
-            {
-                if (entity is File file)
-                {
-                    file.UpdateFilePath();
-                }
-                else if (entity is Folder subFolder)
-                {
-                    UpdateFolderFilePaths(subFolder);
-                }
-            }
-        }
-
+        // Moves a file or folder from a source path to a destination path.
         public void MoveEntity(string sourcePath, string destinationPath)
         {
             try
             {
-                FileSystemEntity sourceEntity = GetEntityFromPath(sourcePath);
-                if (sourceEntity == null) { Console.WriteLine("Error: Source file or folder not found."); return; }
+                FileSystemEntity sourceEntity = GetEntityFromPath(sourcePath); // Gets the source entity to be moved.
+                if (sourceEntity == null) { Console.WriteLine("Error: Source file or folder not found."); return; } // Error if source not found.
 
-                if (sourceEntity == RootFolder)
+                if (sourceEntity == RootFolder || sourceEntity == _recycleBinFolder) // Prevent moving root or recycle bin
                 {
-                    Console.WriteLine("Error: Cannot move the root folder.");
+                    Console.WriteLine("Error: Cannot move the root folder or the Recycle Bin.");
                     return;
                 }
 
-                Folder destinationFolder = GetEntityFromPath(destinationPath) as Folder;
-                if (destinationFolder == null) { Console.WriteLine("Error: Destination folder not found or is a file."); return; }
+                Folder destinationFolder = GetEntityFromPath(destinationPath) as Folder; // Gets the destination folder.
+                if (destinationFolder == null) { Console.WriteLine("Error: Destination folder not found or is a file."); return; } // Error if destination is not a folder or not found.
 
+                // Prevents moving an entity into itself or its subfolder
+                if (destinationFolder.GetFullPath().StartsWith(sourceEntity.GetFullPath() + Path.DirectorySeparatorChar))
+                {
+                    Console.WriteLine("Error: Cannot move an entity into itself or its subfolder.");
+                    return;
+                }
+
+                // Checks if an entity with the same name already exists in the destination folder.
                 if (destinationFolder.GetEntity(sourceEntity.Name) != null)
                 {
-                    Console.WriteLine($"Error: An entity named '{sourceEntity.Name}' already exists in the destination folder.");
+                    Console.WriteLine($"Error: An entity named '{sourceEntity.Name}' already exists in the destination folder."); // Error if entity exists.
                     return;
                 }
 
-                string sourcePhysicalPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, sourceEntity.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-                string destPhysicalPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, destinationFolder.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()), sourceEntity.Name);
-                if (sourceEntity is File && System.IO.File.Exists(sourcePhysicalPath))
+                string sourceFullPath = sourceEntity.GetFullPath(); // Gets the full path of the source entity.
+                // Constructs the full path for the destination.
+                string destinationFullPath = Path.Combine(destinationFolder.GetFullPath(), sourceEntity.Name);
+
+                // Remove from original parent's contents
+                sourceEntity.ParentFolder.RemoveEntity(sourceEntity);
+
+                // Add to new parent's contents and update parent in-memory
+                destinationFolder.AddEntity(sourceEntity);
+                sourceEntity.ParentFolder = destinationFolder;
+
+                // Move physical file/folder
+                if (sourceEntity is Folder && Directory.Exists(sourceFullPath))
                 {
-                    System.IO.File.Move(sourcePhysicalPath, destPhysicalPath);
+                    Directory.Move(sourceFullPath, destinationFullPath);
                 }
-                else if (sourceEntity is Folder && Directory.Exists(sourcePhysicalPath))
+                else if (sourceEntity is File && System.IO.File.Exists(sourceFullPath))
                 {
-                    Directory.Move(sourcePhysicalPath, destPhysicalPath);
+                    System.IO.File.Move(sourceFullPath, destinationFullPath);
                 }
 
-                sourceEntity.ParentFolder.RemoveEntity(sourceEntity);
-                destinationFolder.AddEntity(sourceEntity);
-                if (sourceEntity is File file)
-                {
-                    file.UpdateFilePath();
-                }
-                else if (sourceEntity is Folder folder)
-                {
-                    UpdateFolderFilePaths(folder);
-                }
-                Console.WriteLine($"Moved '{sourceEntity.Name}' from '{sourceEntity.ParentFolder.GetFullPath()}' to '{destinationFolder.GetFullPath()}'.");
+                Console.WriteLine($"Moved '{sourceEntity.Name}' from '{sourceFullPath}' to '{destinationFullPath}'."); // Confirmation message.
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catches any exceptions during moving.
             {
-                Console.WriteLine($"Error moving entity: {ex.Message}");
+                Console.WriteLine($"Error moving entity: {ex.Message}"); // Prints the error message.
             }
         }
 
+        // Copies a file or folder from a source path to a destination path.
         public void CopyEntity(string sourcePath, string destinationPath)
         {
             try
             {
-                FileSystemEntity sourceEntity = GetEntityFromPath(sourcePath);
-                if (sourceEntity == null) { Console.WriteLine("Error: Source file or folder not found."); return; }
+                FileSystemEntity sourceEntity = GetEntityFromPath(sourcePath); // Gets the source entity to be copied.
+                if (sourceEntity == null) { Console.WriteLine("Error: Source file or folder not found."); return; } // Error if source not found.
 
-                Folder destinationFolder = GetEntityFromPath(destinationPath) as Folder;
-                if (destinationFolder == null) { Console.WriteLine("Error: Destination folder not found or is a file."); return; }
+                Folder destinationFolder = GetEntityFromPath(destinationPath) as Folder; // Gets the destination folder.
+                if (destinationFolder == null) { Console.WriteLine("Error: Destination folder not found or is a file."); return; } // Error if destination is not a folder or not found.
 
+                // Checks if an entity with the same name already exists in the destination folder.
                 if (destinationFolder.GetEntity(sourceEntity.Name) != null)
                 {
-                    Console.WriteLine($"Error: An entity named '{sourceEntity.Name}' already exists in the destination folder.");
+                    Console.WriteLine($"Error: An entity named '{sourceEntity.Name}' already exists in the destination folder."); // Error if entity exists.
                     return;
                 }
 
-                string destPhysicalPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, destinationFolder.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()), sourceEntity.Name);
-                if (sourceEntity is File sourceFile)
+                if (sourceEntity is File sourceFile) // If the source entity is a file.
                 {
-                    File newFile = new File(sourceFile.Name, destinationFolder, sourceFile.GetContent());
-                    destinationFolder.AddEntity(newFile);
-                    Console.WriteLine($"Copied file '{sourceFile.Name}' to '{destinationFolder.GetFullPath()}'.");
+                    File newFile = new File(sourceFile.Name, destinationFolder, sourceFile.Content); // Creates a new File object with the same name, parent, and content.
+                    destinationFolder.AddEntity(newFile); // Adds the new file to the destination folder.
+                    string sourceFullPath = sourceFile.GetFullPath(); // Gets the full path of the source file.
+                    string destinationFullPath = Path.Combine(destinationFolder.GetFullPath(), sourceFile.Name); // Constructs the full path for the destination file.
+                    if (System.IO.File.Exists(sourceFullPath)) // If the physical source file exists.
+                    {
+                        System.IO.File.Copy(sourceFullPath, destinationFullPath); // Copies the physical file.
+                    }
+                    Console.WriteLine($"Copied file '{sourceFile.Name}' to '{destinationFolder.GetFullPath()}'."); // Confirmation message.
                 }
-                else if (sourceEntity is Folder sourceFolder)
+                else if (sourceEntity is Folder sourceFolder) // If the source entity is a folder.
                 {
-                    Directory.CreateDirectory(destPhysicalPath);
-                    Folder newFolder = new Folder(sourceFolder.Name, destinationFolder);
-                    destinationFolder.AddEntity(newFolder);
-                    CopyFolderContents(sourceFolder, newFolder);
-                    Console.WriteLine($"Copied folder '{sourceFolder.Name}' to '{destinationFolder.GetFullPath()}'.");
+                    Folder newFolder = new Folder(sourceFolder.Name, destinationFolder); // Creates a new Folder object with the same name and parent.
+                    destinationFolder.AddEntity(newFolder); // Adds the new folder to the destination folder.
+
+                    CopyFolderContents(sourceFolder, newFolder); // Recursively copies the contents of the source folder to the new folder.
+                    Console.WriteLine($"Copied folder '{sourceFolder.Name}' to '{destinationFolder.GetFullPath()}'."); // Confirmation message.
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catches any exceptions during copying.
             {
-                Console.WriteLine($"Error copying entity: {ex.Message}");
+                Console.WriteLine($"Error copying entity: {ex.Message}"); // Prints the error message.
             }
         }
 
+        // Recursively copies the contents (files and subfolders) from a source folder to a destination folder.
         public void CopyFolderContents(Folder source, Folder destination)
         {
-            string destPhysicalPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, destination.GetFullPath().Replace("/", Path.DirectorySeparatorChar.ToString()));
-            Directory.CreateDirectory(destPhysicalPath);
-            foreach (var entity in source.Contents)
+            foreach (var entity in source.Contents) // Iterates through each entity in the source folder.
             {
-                if (entity is File file)
+                if (entity is File file) // If the entity is a file.
                 {
-                    File newFile = new File(file.Name, destination, file.GetContent());
-                    destination.AddEntity(newFile);
+                    File newFile = new File(file.Name, destination, file.Content); // Creates a new File object for the destination.
+                    destination.AddEntity(newFile); // Adds the new file to the destination folder.
+                    string sourcePath = file.GetFullPath(); // Gets the full path of the source file.
+                    string destPath = newFile.GetFullPath(); // Gets the full path of the new file.
+                    if (System.IO.File.Exists(sourcePath)) // If the physical source file exists.
+                    {
+                        System.IO.File.Copy(sourcePath, destPath); // Copies the physical file.
+                    }
                 }
-                else if (entity is Folder folder)
+                else if (entity is Folder folder) // If the entity is a folder.
                 {
-                    string subFolderPath = Path.Combine(destPhysicalPath, folder.Name);
-                    Directory.CreateDirectory(subFolderPath);
-                    Folder newSubFolder = new Folder(folder.Name, destination);
-                    destination.AddEntity(newSubFolder);
-                    CopyFolderContents(folder, newSubFolder);
+                    Folder newSubFolder = new Folder(folder.Name, destination); // Creates a new subfolder object for the destination.
+                    destination.AddEntity(newSubFolder); // Adds the new subfolder to the destination folder.
+                    CopyFolderContents(folder, newSubFolder); // Recursively calls itself to copy the contents of the subfolder.
                 }
             }
         }
 
+        // Navigates to a specified folder.
         public void NavigateTo(string path)
         {
             try
             {
-                FileSystemEntity targetEntity = GetEntityFromPath(path);
-                if (targetEntity == null) { Console.WriteLine("Error: Path not found."); return; }
+                FileSystemEntity targetEntity = GetEntityFromPath(path); // Gets the target entity.
+                if (targetEntity == null) { Console.WriteLine("Error: Path not found."); return; } // Error if path not found.
 
-                if (targetEntity is Folder targetFolder)
+                if (targetEntity is Folder targetFolder) // If the target entity is a folder.
                 {
-                    CurrentFolder = targetFolder;
-                    Console.WriteLine($"Current directory: {CurrentFolder.GetFullPath()}");
+                    CurrentFolder = targetFolder; // Sets the current folder to the target folder.
+                    Console.WriteLine($"Current directory: {CurrentFolder.GetFullPath()}"); // Displays the new current directory.
                 }
                 else
                 {
-                    Console.WriteLine("Error: Cannot navigate to a file.");
+                    Console.WriteLine("Error: Cannot navigate to a file."); // Error if trying to navigate to a file.
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catches any exceptions during navigation.
             {
-                Console.WriteLine($"Error navigating: {ex.Message}");
+                Console.WriteLine($"Error navigating: {ex.Message}"); // Prints the error message.
             }
         }
 
+        // Lists the contents of the current or specified folder.
         public void ListContents(string path = null, bool detailed = false)
         {
             try
             {
-                Folder folderToList = CurrentFolder;
-                if (!string.IsNullOrEmpty(path))
+                Folder folderToList = CurrentFolder; // Defaults to the current folder.
+                if (!string.IsNullOrEmpty(path)) // If a path is provided.
                 {
-                    folderToList = GetEntityFromPath(path) as Folder;
-                    if (folderToList == null)
+                    folderToList = GetEntityFromPath(path) as Folder; // Gets the folder from the specified path.
+                    if (folderToList == null) // If the entity at the path is not a folder or not found.
                     {
-                        Console.WriteLine("Error: Folder not found / Path pointing to a file instead of a folder.");
+                        Console.WriteLine("Error: Folder not found / Path pointing to a file instead of a folder."); // Error message.
                         return;
                     }
                 }
-                folderToList.ListContents(detailed);
+                folderToList.ListContents(detailed); // Calls the ListContents method on the folder object.
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catches any exceptions during listing.
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine($"Error: {ex.Message}"); // Prints the error message.
             }
         }
 
+        // Views the content of a specified file.
         public void ViewFile(string path)
         {
             try
             {
-                File file = GetEntityFromPath(path) as File;
-                if (file == null) { Console.WriteLine("Error: File not found / Path pointing to a folder instead of a file."); return; }
-                TextEditor.ViewText(file.GetContent());
-                _historyLogger.LogAccess(file.GetFullPath(), DateTime.Now);
+                File file = GetEntityFromPath(path) as File; // Gets the file from the specified path.
+                if (file == null) { Console.WriteLine("Error: File not found / Path pointing to a folder instead of a file."); return; } // Error if not a file or not found.
+                TextEditor.ViewText(file.Content); // Calls the ViewText method from TextEditor to display content.
+                _historyLogger.LogAccess(file.GetFullPath(), DateTime.Now); // Logs the file access.
             }
-            catch (Exception ex)
+            catch (Exception ex) // Catches any exceptions during viewing.
             {
-                Console.WriteLine($"Error viewing file: {ex.Message}");
+                Console.WriteLine($"Error viewing file: {ex.Message}"); // Prints the error message.
             }
         }
 
+        // Edits the content of a specified file using an interactive text editor.
         public void EditFile(string path)
         {
             try
             {
-                File file = GetEntityFromPath(path) as File;
-                if (file == null) { Console.WriteLine("Error: File not found / Path pointing to a folder instead of a file."); return; }
+                File file = GetEntityFromPath(path) as File; // Gets the file from the specified path.
+                if (file == null) { Console.WriteLine("Error: File not found / Path pointing to a folder instead of a file."); return; } // Error if not a file or not found.
 
-                string editedContent = TextEditor.EditText(file.GetContent());
-                file.Edit(editedContent);
-                _historyLogger.LogAccess(file.GetFullPath(), DateTime.Now);
+                string editedContent = TextEditor.EditText(file.Content); // Calls the EditText method from TextEditor to get edited content.
+                file.Edit(editedContent); // Updates the file's content with the edited content.
+                _historyLogger.LogAccess(file.GetFullPath(), DateTime.Now); // Logs the file access (editing is also an access).
+            }
+            catch (Exception ex) // Catches any exceptions during editing.
+            {
+                Console.WriteLine($"Error: {ex.Message}"); // Prints the error message.
+            }
+        }
+
+        // Searches for files and folders whose names contain the given search term.
+        public void SearchFiles(string searchTerm)
+        {
+            Console.WriteLine($"Searching for '{searchTerm}' ..."); // Informs the user about the search.
+            List<FileSystemEntity> results = new List<FileSystemEntity>(); // Creates a list to store search results.
+            SearchRecursive(RootFolder, searchTerm, results); // Starts a recursive search from the root folder.
+
+            if (!results.Any()) // If no results are found.
+            {
+                Console.WriteLine("No matching files found."); // Informs the user.
+                return;
+            }
+
+            Console.WriteLine("\n--- Search Results ---"); // Header for search results.
+            foreach (var entity in results) // Iterates through each found entity.
+            {
+                string type = entity is File ? "File" : "Folder"; // Determines if the entity is a file or folder.
+                Console.WriteLine($"- {type}: {entity.GetFullPath()} (Size: {entity.GetSize()} bytes, Created: {entity.CreationDate.ToShortDateString()})"); // Prints details of the found entity.
+            }
+            Console.WriteLine("----------------------"); // Footer for search results.
+        }
+
+        // Recursively searches for entities containing the search term within a given folder and its subfolders.
+        private void SearchRecursive(Folder currentFolder, string searchTerm, List<FileSystemEntity> results)
+        {
+            foreach (var entity in currentFolder.Contents) // Iterates through each entity in the current folder.
+            {
+                bool match = entity.Name.Contains(searchTerm, StringComparison.OrdinalIgnoreCase); // Checks if the entity's name contains the search term.
+
+                if (match) // If there's a match.
+                {
+                    results.Add(entity); // Adds the entity to the results list.
+                }
+
+                if (entity is Folder subFolder && subFolder != _recycleBinFolder) // If the current entity is a subfolder and not the Recycle Bin
+                {
+                    SearchRecursive(subFolder, searchTerm, results); // Recursively calls itself for the subfolder.
+                }
+            }
+        }
+
+        // Displays the file access history.
+        public void DisplayHistory()
+        {
+            Console.WriteLine("\n--- File Access History ---"); // Header for history.
+            List<string> history = _historyLogger.GetHistory(); // Retrieves the access history from the logger.
+            if (!history.Any()) // If no history entries are found.
+            {
+                Console.WriteLine("No access history found."); // Informs the user.
+                return;
+            }
+            foreach (var entry in history) // Iterates through each history entry.
+            {
+                Console.WriteLine(entry); // Prints the history entry.
+            }
+            Console.WriteLine("---------------------------"); // Footer for history.
+        }
+
+        // Restores an item from the Recycle Bin to its original location or to the root.
+        public void RestoreEntity(string recycleBinPath)
+        {
+            try
+            {
+                FileSystemEntity entityToRestore = GetEntityFromPath(recycleBinPath);
+
+                // Ensure the item is actually in the Recycle Bin
+                if (entityToRestore == null || entityToRestore.ParentFolder != _recycleBinFolder)
+                {
+                    Console.WriteLine("Error: Item not found in Recycle Bin or invalid path.");
+                    return;
+                }
+
+                string currentRecycleBinFullPath = entityToRestore.GetFullPath();
+                string originalFullPath;
+
+                // Try to get the original path from the map. If not found (e.g., app restarted), default to root.
+                if (!_recycleBinMap.TryGetValue(currentRecycleBinFullPath, out originalFullPath))
+                {
+                    Console.WriteLine($"Warning: Original path for '{entityToRestore.Name}' not found (only remembered during current session). Restoring to root.");
+                    originalFullPath = Path.Combine(RootFolder.GetFullPath(), entityToRestore.Name);
+                }
+
+                Folder originalParentFolder = GetParentFolderFromPath(originalFullPath);
+                string originalEntityName = GetEntityNameFromPath(originalFullPath);
+
+                // If original parent folder doesn't exist, restore to root
+                if (originalParentFolder == null)
+                {
+                    Console.WriteLine($"Original parent folder for '{entityToRestore.Name}' not found or doesn't exist. Restoring to root.");
+                    originalParentFolder = RootFolder;
+                }
+
+                // Handle potential name conflicts in the destination folder
+                FileSystemEntity existingEntityInDestination = originalParentFolder.GetEntity(originalEntityName);
+                if (existingEntityInDestination != null && existingEntityInDestination != entityToRestore)
+                {
+                    string newName = originalEntityName;
+                    int counter = 1;
+                    while (originalParentFolder.GetEntity($"{newName}({counter})") != null)
+                    {
+                        counter++;
+                    }
+                    newName = $"{newName}({counter})";
+                    Console.WriteLine($"Conflict: An item named '{originalEntityName}' already exists at destination. Restoring as '{newName}'.");
+                    entityToRestore.Name = newName; // Rename in-memory entity
+                }
+
+                // Remove from Recycle Bin's contents
+                _recycleBinFolder.RemoveEntity(entityToRestore);
+
+                // Add to original parent's contents and update parent in-memory
+                originalParentFolder.AddEntity(entityToRestore);
+                entityToRestore.ParentFolder = originalParentFolder;
+
+                // Move physical file/folder back
+                string sourcePhysicalPath = currentRecycleBinFullPath;
+                string destinationPhysicalPath = entityToRestore.GetFullPath(); // Get new path after changing parent
+
+                if (entityToRestore is Folder && Directory.Exists(sourcePhysicalPath))
+                {
+                    Directory.Move(sourcePhysicalPath, destinationPhysicalPath);
+                }
+                else if (entityToRestore is File && System.IO.File.Exists(sourcePhysicalPath))
+                {
+                    System.IO.File.Move(sourcePhysicalPath, destinationPhysicalPath);
+                }
+
+                _recycleBinMap.Remove(currentRecycleBinFullPath); // Remove from map after successful restore
+                Console.WriteLine($"'{entityToRestore.Name}' restored to '{entityToRestore.ParentFolder.GetFullPath()}'.");
+                _historyLogger.LogAccess(entityToRestore.GetFullPath() + " (restored from Recycle Bin)", DateTime.Now);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine($"Error restoring entity: {ex.Message}");
             }
         }
 
-        public void SearchFiles(string searchTerm)
+        // Permanently deletes all items in the Recycle Bin.
+        public void EmptyRecycleBin()
         {
-            Console.WriteLine($"Searching for '{searchTerm}' ...");
-            List<FileSystemEntity> results = new List<FileSystemEntity>();
-            SearchRecursive(RootFolder, searchTerm, results);
-
-            if (!results.Any())
+            try
             {
-                Console.WriteLine("No matching files found.");
-                return;
-            }
-
-            Console.WriteLine("\n--- Search Results ---");
-            foreach (var entity in results)
-            {
-                string type = entity is File ? "File" : "Folder";
-                Console.WriteLine($"- {type}: {entity.GetFullPath()} (Size: {entity.GetSize()} bytes, Created: {entity.CreationDate.ToShortDateString()})");
-            }
-            Console.WriteLine("----------------------");
-        }
-
-        private void SearchRecursive(Folder currentFolder, string searchTerm, List<FileSystemEntity> results)
-        {
-            foreach (var entity in currentFolder.Contents)
-            {
-                bool match = entity.Name.Contains(searchTerm, StringComparison.OrdinalIgnoreCase);
-
-                if (match)
+                // Create a copy of the list to avoid modifying during iteration
+                List<FileSystemEntity> itemsToRemove = new List<FileSystemEntity>(_recycleBinFolder.Contents);
+                if (!itemsToRemove.Any())
                 {
-                    results.Add(entity);
+                    Console.WriteLine("Recycle Bin is already empty.");
+                    return;
                 }
 
-                if (entity is Folder subFolder)
+                Console.WriteLine("Emptying Recycle Bin...");
+                foreach (var entity in itemsToRemove)
                 {
-                    SearchRecursive(subFolder, searchTerm, results);
+                    // Physical deletion
+                    string entityPhysicalPath = Path.Combine(_recycleBinFolder.GetFullPath(), entity.Name);
+                    if (entity is Folder && Directory.Exists(entityPhysicalPath))
+                    {
+                        Directory.Delete(entityPhysicalPath, true); // Delete recursively
+                    }
+                    else if (entity is File && System.IO.File.Exists(entityPhysicalPath))
+                    {
+                        System.IO.File.Delete(entityPhysicalPath);
+                    }
+
+                    // Remove from in-memory recycle bin
+                    _recycleBinFolder.RemoveEntity(entity); // This also updates _recycleBinFolder.LastModifiedDate
                 }
+                _recycleBinMap.Clear(); // Clear the map
+
+                Console.WriteLine("Recycle Bin emptied successfully.");
+                _historyLogger.LogAccess("Recycle Bin emptied", DateTime.Now);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error emptying Recycle Bin: {ex.Message}");
             }
         }
 
-        public void DisplayHistory()
+        // Lists the contents of the Recycle Bin.
+        public void ListRecycleBinContents(bool detailed = false)
         {
-            Console.WriteLine("\n--- File Access History ---");
-            List<string> history = _historyLogger.GetHistory();
-            if (!history.Any())
+            try
             {
-                Console.WriteLine("No access history found.");
-                return;
+                _recycleBinFolder.ListContents(detailed);
             }
-            foreach (var entry in history)
+            catch (Exception ex)
             {
-                Console.WriteLine(entry);
+                Console.WriteLine($"Error listing Recycle Bin contents: {ex.Message}");
             }
-            Console.WriteLine("---------------------------");
         }
 
+        // Displays a help message with available commands.
         public void DisplayHelp()
         {
             Console.WriteLine("\n--- Available Commands ------------------------------------------------------------------------------------------------");
             Console.WriteLine("  mkdir <folder_name>                 - Create a new folder.");
             Console.WriteLine("  touch <file_name> [content]         - Create a new file with optional content.");
-            Console.WriteLine("  rm <path>                           - Delete a file or folder.");
+            Console.WriteLine("  rm <path>                           - Move a file or folder to the Recycle Bin.");
             Console.WriteLine("  mv <source_path> <destination_path> - Move a file or folder.");
             Console.WriteLine("  cp <source_path> <destination_path> - Copy a file or folder.");
             Console.WriteLine("  rename <path> <new_name>            - Rename a file or folder.");
@@ -610,44 +800,18 @@ namespace FileStorageSystem
             Console.WriteLine("  search <term>                       - Search files.");
             Console.WriteLine("  history                             - View file access history.");
             Console.WriteLine("  pwd                                 - Print working directory.");
+            Console.WriteLine("  restore <recycle_bin_path>          - Restore an item from the Recycle Bin.");
+            Console.WriteLine("  emptyrb                             - Empty the Recycle Bin permanently.");
+            Console.WriteLine("  lsrb [-l]                           - List contents of the Recycle Bin. Use '-l' for detailed view.");
             Console.WriteLine("  help                                - Display this help message.");
             Console.WriteLine("  exit                                - Exit the file system.");
             Console.WriteLine("------------------------------------------------------------------------------------------------------------------------");
         }
 
+        // Prints the current working directory (full path of the current folder).
         public void PrintWorkingDirectory()
         {
-            Console.WriteLine($"Current directory: {CurrentFolder.GetFullPath()}");
-        }
-    }
-
-    public class FileSystemEntityConverter : JsonConverter<FileSystemEntity>
-    {
-        public override FileSystemEntity Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-        {
-            using (var jsonDoc = JsonDocument.ParseValue(ref reader))
-            {
-                if (jsonDoc.RootElement.TryGetProperty("contents", out _))
-                {
-                    return jsonDoc.RootElement.Deserialize<Folder>(options);
-                }
-                else
-                {
-                    return jsonDoc.RootElement.Deserialize<File>(options);
-                }
-            }
-        }
-
-        public override void Write(Utf8JsonWriter writer, FileSystemEntity value, JsonSerializerOptions options)
-        {
-            if (value is File file)
-            {
-                JsonSerializer.Serialize(writer, file, options);
-            }
-            else if (value is Folder folder)
-            {
-                JsonSerializer.Serialize(writer, folder, options);
-            }
+            Console.WriteLine($"Current directory: {CurrentFolder.GetFullPath()}"); // Displays the full path.
         }
     }
 }
